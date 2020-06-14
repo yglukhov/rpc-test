@@ -31,7 +31,34 @@ macro checkRequiredMethod(call: typed, typ: typed): untyped =
     error "Object does not implement required interface method: " & repr(call)
   result = call
 
-macro iface*(name: untyped, body: untyped): untyped =
+template forceReturnValue(retType: typed, someCall: typed): untyped =
+  when retType is void:
+    someCall
+  else:
+    return someCall
+
+var interfaceDecls {.compileTime.} = initTable[string, NimNode]()
+var constructorDecls {.compileTime.} = initTable[string, NimNode]()
+
+proc getInterfaceKey(sym: NimNode): string =
+  let t = getTypeImpl(sym)
+  expectKind(t, nnkBracketExpr)
+  assert(t.len == 2)
+  assert t[0].eqIdent("typedesc")
+  signatureHash(t[1])
+
+macro registerInterfaceDecl(sym: typed, body: untyped, constr: untyped) =
+  let k = getInterfaceKey(sym)
+  interfaceDecls[k] = body
+  constructorDecls[k] = constr
+
+proc to*[T: ref](a: T, I: typedesc[Interface]): I {.inline.} =
+  when T is I:
+    a
+  else:
+    I(private_vTable: getVTable(I.VTable, T), private_obj: packObj(a))
+
+proc ifaceImpl*(name: NimNode, body: NimNode): NimNode =
   result = newNimNode(nnkStmtList)
 
   let iName = ident($name)
@@ -43,13 +70,16 @@ macro iface*(name: untyped, body: untyped): untyped =
   let functions = newNimNode(nnkStmtList)
   let mixins = newNimNode(nnkStmtList)
   let upackedThis = ident"unpackedThis"
+  let ifaceDecl = newNimNode(nnkStmtList)
 
   for i, p in body:
     p.expectKind(nnkProcDef)
-    let pName = $p.name
+    ifaceDecl.add(copyNimTree(p))
     mixins.add(newTree(nnkMixinStmt, p.name))
     let pt = newTree(nnkProcTy, p.params, newEmptyNode())
     pt.addPragma(ident"nimcall")
+    var retType = pt[0][0]
+    if retType.kind == nnkEmpty: retType = ident"void"
     pt[0].insert(1, newIdentDefs(ident"this", ident"RootRef"))
     let fieldName = ident("<" & $i & ">" & $p.name)
     vTableType.add(newIdentDefs(fieldName, pt))
@@ -69,7 +99,7 @@ macro iface*(name: untyped, body: untyped): untyped =
     let lambdaBody = quote do:
       var `upackedThis`: `genericT`
       unpackObj(this, `upackedThis`)
-      checkRequiredMethod(`lambdaCall`, `iName`)
+      forceReturnValue(`retType`, checkRequiredMethod(`lambdaCall`, `iName`))
 
     let lam = newTree(nnkLambda, newEmptyNode(), newEmptyNode(), newEmptyNode(), pt[0], newEmptyNode(), newEmptyNode(), lambdaBody)
     # lam.addPragma(newTree(nnkExprColonExpr, ident"stackTrace", ident"off"))
@@ -94,24 +124,24 @@ macro iface*(name: untyped, body: untyped): untyped =
       `mixins`
       `vTableConstr`
     `functions`
+
     converter `converterName`[T: ref](a: T): `iName` {.inline.} =
-      when T is `iName`:
-        a
-      else:
-        `iName`(private_vTable: getVTable(`iName`.VTable, T), private_obj: packObj(a))
-  echo repr result
+      to(a, `iName`)
 
-iterator interfaceProcs*(t: NimNode): (string, NimNode) =
-  let r = getTypeImpl(t)[1].getTypeImpl()[2]
-  for n in r:
-    let fullName = $n[0]
-    let prettyName = fullName[fullName.find('>') + 1 .. ^1]
-    yield (prettyName, n[1])
+  result.add quote do:
+    registerInterfaceDecl(`iName`, `ifaceDecl`, `vTableConstr`)
 
-# proc getInterfaceProcs(t: NimNode): NimNode =
-#   result = getTypeImpl(t)[1].getTypeImpl()[2]
+macro iface*(name: untyped, body: untyped): untyped =
+  result = ifaceImpl(name, body)
+  # echo repr result
 
-# macro doo(a: typed) =
-#   let procs = getInterfaceProcs(a)
-#   echo repr(procs)
+proc getInterfaceDecl*(interfaceTypedescSym: NimNode): NimNode =
+  interfaceDecls[getInterfaceKey(interfaceTypedescSym)]
 
+macro localIfaceConvert*(ifaceType: typedesc[Interface], o: typed): untyped =
+  let constr = constructorDecls[getInterfaceKey(ifaceType)]
+  let genericT = ident"T"
+  result = quote do:
+    type `genericT` = type(`o`)
+    let vt {.global.} = `constr`
+    `ifaceType`(private_vTable: unsafeAddr vt, privateObj: packObj(`o`))

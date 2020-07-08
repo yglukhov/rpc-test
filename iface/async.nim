@@ -1,6 +1,6 @@
 import asyncdispatch, macros
 # or import chronos
-
+{.error: "Not implemented".}
 import ../iface
 
 template wrapTypeIntoFuture(T: typedesc): untyped =
@@ -16,11 +16,11 @@ macro deriveAsyncInterface(name: untyped, fromInterface: typedesc): untyped =
     var retType = p.params[0]
     if retType.kind == nnkEmpty:
       retType = ident"void"
-    # ap.params[0] = newCall(bindSym"wrapTypeIntoFuture", retType)
+    p.params[0] = newCall(bindSym"wrapTypeIntoFuture", retType)
     newDecl.add(p)
 
-  result = ifaceImpl(ident"Blabla", newDecl)
-  # echo "DERRRIVE ASYNC: ", repr(result)
+  result = ifaceImpl(name, newDecl, false)
+  echo "DERRRIVE ASYNC: ", repr(result)
 
 # type
   # AsyncVTable[TVT, Inter] = asyncify(TVT, Inter)
@@ -37,7 +37,15 @@ proc p2(b: Bar) = discard
 # iface AsyncFoo:
 #   proc p1(): Future[int]
 #   proc p2(): Future[void]
-deriveAsyncInterface(AsyncFoo, Foo)
+# deriveAsyncInterface(AsyncFoo, Foo)
+
+proc asyncify*(o: Interface): auto =
+  deriveAsyncInterface(AsyncT, typeof(o))
+  var v: AsyncT
+  return 0
+
+var f: Foo
+let a = asyncify(f)
 
 # let a = to(Bar(), asyncify(Foo))
 # type

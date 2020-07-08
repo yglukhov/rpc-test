@@ -58,7 +58,7 @@ proc to*[T: ref](a: T, I: typedesc[Interface]): I {.inline.} =
   else:
     I(private_vTable: getVTable(I.VTable, T), private_obj: packObj(a))
 
-proc ifaceImpl*(name: NimNode, body: NimNode): NimNode =
+proc ifaceImpl*(name: NimNode, body: NimNode, addConverter: bool): NimNode =
   result = newNimNode(nnkStmtList)
 
   let iName = ident($name)
@@ -76,7 +76,7 @@ proc ifaceImpl*(name: NimNode, body: NimNode): NimNode =
     p.expectKind(nnkProcDef)
     ifaceDecl.add(copyNimTree(p))
     mixins.add(newTree(nnkMixinStmt, p.name))
-    let pt = newTree(nnkProcTy, p.params, newEmptyNode())
+    let pt = newTree(nnkProcTy, copyNimTree(p.params), newEmptyNode())
     pt.addPragma(ident"nimcall")
     var retType = pt[0][0]
     if retType.kind == nnkEmpty: retType = ident"void"
@@ -125,14 +125,16 @@ proc ifaceImpl*(name: NimNode, body: NimNode): NimNode =
       `vTableConstr`
     `functions`
 
-    converter `converterName`[T: ref](a: T): `iName` {.inline.} =
-      to(a, `iName`)
+  if addConverter:
+    result.add quote do:
+      converter `converterName`[T: ref](a: T): `iName` {.inline.} =
+        to(a, `iName`)
 
   result.add quote do:
     registerInterfaceDecl(`iName`, `ifaceDecl`, `vTableConstr`)
 
 macro iface*(name: untyped, body: untyped): untyped =
-  result = ifaceImpl(name, body)
+  result = ifaceImpl(name, body, true)
   # echo repr result
 
 proc getInterfaceDecl*(interfaceTypedescSym: NimNode): NimNode =

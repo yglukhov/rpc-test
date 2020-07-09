@@ -147,3 +147,14 @@ macro localIfaceConvert*(ifaceType: typedesc[Interface], o: typed): untyped =
     type `genericT` = type(`o`)
     let vt {.global.} = `constr`
     `ifaceType`(private_vTable: unsafeAddr vt, privateObj: packObj(`o`))
+
+macro ifaceFindMethodAux(ifaceType: typedesc[Interface], methodName: string): int =
+  let decl = getInterfaceDecl(ifaceType)
+  result = newTree(nnkCaseStmt, methodName)
+  for i, p in decl:
+    result.add newTree(nnkOfBranch, newLit($p.name), newLit(i))
+  result.add newTree(nnkElse, newLit(-1))
+
+proc ifaceFindMethod*(ifaceType: typedesc[Interface], methodName: string): int =
+  # Returns index of method with name in the interface, or -1 if not found
+  ifaceFindMethodAux(ifaceType, methodName)

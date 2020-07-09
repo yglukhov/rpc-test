@@ -1,5 +1,5 @@
 import iface, json, unittest
-import rpc/[router, json_caller]
+import rpc/[json_router, json_caller]
 
 iface MyInterface:
   proc bar(a: string = "hi")

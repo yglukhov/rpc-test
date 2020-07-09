@@ -2,61 +2,53 @@ import macros, json
 import ../iface
 import ./private/utils
 
+## TMessageReader should define the following methods:
+## proc messageNext(reader, T: typedesc[Interface]): int # returns method index in Interface
+## proc messageArg(reader, ArgType: typedesc, argIdx: int, argName: string): ArgType
+## proc messageArg(reader, ArgType: typedesc, argIdx: int, argName: string, defaultValue: ArgType): ArgType
+## proc messageResult[T](reader, ResultType: typedesc, value: T): ResultType
+
 type
-  JsonRPCRouter* = ref object of RootObj
-    dispatch: proc(r: JsonRPCRouter, j: JsonNode): JsonNode {.nimcall.}
+  Router*[TResult] = ref object of RootObj
+    dispatch: proc(r: Router[TResult]): TResult {.nimcall.}
 
-proc parseJsonArg(typ: typedesc, name: string, j: JsonNode): typ =
-  let c = j{name}
-  if unlikely c.isNil:
-    raise newException(ValueError, "Required parameter is missing: " & name)
-  c.to(typ)
+  RouterWithReader*[TResult, TMessageReader] = ref object of Router[TResult]
+    reader*: TMessageReader
 
-proc parseJsonArg(typ: typedesc, name: string, def: typ, j: JsonNode): typ =
-  let c = j{name}
-  if c.isNil:
-    def
-  else:
-    c.to(typ)
+proc unknownMethodError(RetType: typedesc): RetType =
+  assert(false, "Internal error")
 
-template convertToJson[T](v: T): JsonNode =
-  when T is void:
-    v
-    newJNull()
-  else:
-    %(v)
-
-proc unknownMethodError(methodName: string): JsonNode =
-  raise newException(ValueError, "Unknown method: " & methodName)
-
-macro genDispatcherBody(theT: typedesc, o: typed, j: JsonNode, methodName: string): untyped =
-  let decl = getInterfaceDecl(theT)
-  result = newTree(nnkCaseStmt, methodName)
-  for p in decl:
-    let br = newTree(nnkOfBranch, newLit($p.name))
+macro genDispatcherBody(interfaceType, retType: typedesc, o, reader: typed): untyped =
+  let decl = getInterfaceDecl(interfaceType)
+  result = newTree(nnkCaseStmt, newCall("messageNext", reader, interfaceType))
+  for methodIdx, p in decl:
+    let br = newTree(nnkOfBranch, newLit(methodIdx))
     let theCall = newCall(p.name, o)
     for i, name, typ, def in arguments(p.params):
       if def.kind == nnkEmpty:
-        theCall.add newCall(bindSym"parseJsonArg", typ, newLit($name), j)
+        theCall.add newCall("messageArg", reader, typ, newLit(i), newLit($name))
       else:
-        theCall.add newCall(bindSym"parseJsonArg", typ, newLit($name), def, j)
-    br.add newCall(bindSym"convertToJson", theCall)
+        theCall.add newCall("messageArg", reader, typ, newLit(i), newLit($name), def)
+    br.add newCall("messageResult", reader, retType, theCall)
     result.add(br)
 
-  result.add newTree(nnkElse, newCall(bindSym"unknownMethodError", methodName))
+  result.add newTree(nnkElse, newCall(bindSym"unknownMethodError", retType))
 
-proc dispatchJsonToInterface(o: Interface, methodName: string, j: JsonNode): JsonNode =
-  genDispatcherBody(type(o), o, j, methodName)
+proc dispatchNextMessageToInterface[TMessageReader](TResult: typedesc, o: Interface, reader: TMessageReader): TResult {.inline.} =
+  return genDispatcherBody(type(o), TResult, o, reader)
 
-proc newJsonRPCRouter*(i: Interface): JsonRPCRouter =
+proc newRouter*[TMessageReader](i: Interface, TResult: typedesc, reader: TMessageReader): RouterWithReader[TResult, TMessageReader] =
   type
     I = typeof(i)
-    Router = ref object of JsonRPCRouter
+    R = typeof(result)
+    RouterInst = ref object of R
       obj: I
-  let r = Router(obj: i)
-  r.dispatch = proc(r: JsonRPCRouter, j: JsonNode): JsonNode {.nimcall.} =
-    dispatchJsonToInterface(Router(r).obj, j["method"].getStr(), j)
+  let r = RouterInst(reader: reader, obj: i)
+  r.dispatch = proc(r: Router[TResult]): TResult {.nimcall.} =
+    let r = RouterInst(r)
+    dispatchNextMessageToInterface(TResult, r.obj, r.reader)
 
   result = r
 
-proc route*(r: JsonRPCRouter, j: JsonNode): JsonNode {.inline.} = r.dispatch(r, j)
+proc dispatchNextMessage*[TResult](r: Router[TResult]): TResult =
+  r.dispatch(r)

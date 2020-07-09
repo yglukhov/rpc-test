@@ -1,5 +1,5 @@
 import iface, json, unittest, asyncdispatch
-import rpc/[router, caller]
+import rpc/[router, json_caller]
 
 iface MyInterface:
   proc bar(a: string = "hi"): Future[void]
